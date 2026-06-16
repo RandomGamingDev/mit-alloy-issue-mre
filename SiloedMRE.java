@@ -16,7 +16,7 @@ public class SiloedMRE {
             .and(Relation.UNIV.in(n.join(succ.closure()))).forAll(n.oneOf(Relation.UNIV));
         
         Solver solver = new Solver();
-        solver.options().setSolver(SATFactory.get("sat4j"));
+        solver.options().setSolver(SATFactory.DefaultSAT4J);
         solver.options().setSymmetryBreaking(0); // Simulate incomplete static symmetry breaking
         
         System.out.println("Finding all isomorphic cycle graphs:\n");

@@ -1,0 +1,3 @@
+[submodule "kodkod"]
+	path = kodkod
+	url = https://github.com/emina/kodkod.git
