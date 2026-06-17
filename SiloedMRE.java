@@ -6,27 +6,33 @@ import java.util.*;
 
 public class SiloedMRE {
     public static void main(String[] args) throws Exception {
-        Universe univ = new Universe("N0", "N1", "N2");
-        Relation succ = Relation.nary("succ", 2);
+        // A universe of 4 nodes
+        Universe univ = new Universe("N0", "N1", "N2", "N3");
+        Relation r = Relation.nary("r", 2);
         Bounds bounds = new Bounds(univ);
-        bounds.bound(succ, univ.factory().allOf(2));
+        bounds.bound(r, univ.factory().allOf(2));
         
-        Variable n = Variable.unary("n");
-        Formula cycle = n.join(succ).one().and(succ.join(n).one())
-            .and(Relation.UNIV.in(n.join(succ.closure()))).forAll(n.oneOf(Relation.UNIV));
+        // Constraint: relation r has exactly 2 edges
+        Formula f = r.count().eq(IntConstant.constant(2));
         
         Solver solver = new Solver();
         solver.options().setSolver(SATFactory.DefaultSAT4J);
-        solver.options().setSymmetryBreaking(0); // Simulate incomplete static symmetry breaking
+        // We explicitly ENABLE static symmetry breaking.
+        // Kodkod's static symmetry breaking is incomplete for many symmetric states.
+        solver.options().setSymmetryBreaking(20); 
+        solver.options().setBitwidth(4);
         
-        System.out.println("Finding all isomorphic cycle graphs:\n");
-        Iterator<Solution> it = solver.solveAll(cycle, bounds);
-        for (int i = 0; i < 2 && it.hasNext(); i++) {
+        System.out.println("Finding all non-isomorphic instances of exactly 2 edges:\n");
+        Iterator<Solution> it = solver.solveAll(f, bounds);
+        
+        int count = 0;
+        Set<String> canonicals = new HashSet<>();
+        
+        while(it.hasNext()) {
             Solution sol = it.next();
             if (!sol.sat()) break;
             
-            TupleSet raw = sol.instance().tuples(succ);
-            System.out.println("Solution " + i + " Raw SAT Mapping: " + raw);
+            TupleSet raw = sol.instance().tuples(r);
             
             // Prove graph isomorphism by hashing the structure (canonicalization)
             Map<String, String> map = new HashMap<>();
@@ -37,7 +43,24 @@ public class SiloedMRE {
                 canonical.add("[" + map.get(t.atom(0)) + "->" + map.get(t.atom(1)) + "]");
             }
             Collections.sort(canonical);
-            System.out.println("Solution " + i + " Canonical Graph: " + canonical + "\n");
+            String canStr = canonical.toString();
+            
+            if (canonicals.contains(canStr)) {
+                System.out.println("=========================================");
+                System.out.println("BUG REPRODUCED: IDENTICAL DUPLICATE FOUND");
+                System.out.println("=========================================");
+                System.out.println("Despite `setSymmetryBreaking(20)`, Kodkod's SolutionIterator yielded:");
+                System.out.println("Raw SAT Mapping: " + raw);
+                System.out.println("Canonical Graph: " + canStr);
+                System.out.println("\nBecause the static symmetry breaker missed this symmetry, the boolean");
+                System.out.println("assignment was different, satisfying `AbstractKodkodSolver`'s naive `notModel`");
+                System.out.println("blocking clause, thus yielding an isomorphic duplicate.");
+                return;
+            }
+            
+            canonicals.add(canStr);
+            System.out.println("Solution " + count + " Raw SAT: " + raw + " | Canonical: " + canStr);
+            count++;
         }
     }
 }
