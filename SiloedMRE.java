@@ -10,16 +10,17 @@ import java.util.*;
 
 /**
  * Minimal reproduction: the Alloy API ({@code A4Solution.next()} enumeration)
- * yields multiple instances with IDENTICAL Alloy output. The GUI suppresses
- * these via the {@code latestKodkods} dedup in SimpleReporter; the API does not,
- * so API consumers receive duplicate instances.
+ * returns multiple instances with IDENTICAL Alloy output, even though the
+ * UNDERLYING Kodkod instances are DISTINCT (isomorphic-but-not-equal).
+ *
+ * This proves the duplication is introduced by Alloy's translation/output
+ * layer, not by Kodkod: Kodkod hands Alloy different instances, and Alloy
+ * collapses them to the same output without deduplicating on the API path.
+ * The GUI hides this via SimpleReporter's `latestKodkods` dedup.
  *
  * Build (alloy.jar only):
  *   javac -cp alloy.jar AlloyApiMRE.java -d out
  *   java  -cp alloy.jar:out AlloyApiMRE
- *
- * Expected: the run prints "DUPLICATE INSTANCE (identical Alloy output)" at
- * least once, with duplicateCount > 0 in the summary.
  */
 public class SiloedMRE {
 
@@ -45,46 +46,67 @@ public class SiloedMRE {
         "\n" +
         "run Example for 5 expect 1\n";
 
+    /** Bundle of what we record for each first-seen Alloy output. */
+    static final class Record {
+        final int index;
+        final String kodkod;   // raw Kodkod instance (debugExtractKInstance)
+        Record(int index, String kodkod) { this.index = index; this.kodkod = kodkod; }
+    }
+
     public static void main(String[] args) throws Exception {
         A4Reporter rep = new A4Reporter();
         Module world = CompUtil.parseEverything_fromString(rep, MODEL);
         Command cmd = world.getAllCommands().get(0);
 
         A4Options options = new A4Options();
-        // Default symmetry breaking, matching the GUI. The GUI dedups the
-        // resulting isomorphic survivors; the API does not.
-        options.symmetry = 20;
+        options.symmetry = 20;   // default symmetry breaking, matching the GUI
 
         A4Solution ans = TranslateAlloyToKodkod.execute_command(
                 rep, world.getAllReachableSigs(), cmd, options);
 
         System.out.println("Enumerating all instances via the Alloy API "
-                + "(A4Solution.next()) ...\n");
+                + "(A4Solution.next()) ...");
+        System.out.println("For each Alloy-output duplicate, the UNDERLYING Kodkod");
+        System.out.println("instances are printed to show they are DISTINCT.\n");
 
-        // Dedup key = Alloy's OWN finalized instance representation. This is
-        // what API consumers receive and what the GUI dedups internally.
-        // (Two instances with identical toString() are, to Alloy, the same
-        // instance presented twice.)
-        Map<String, Integer> firstSeenAt = new LinkedHashMap<>();
+        // Alloy output -> first record (index + its Kodkod instance).
+        Map<String, Record> firstSeenAt = new LinkedHashMap<>();
+
         int total = 0;
         int duplicateCount = 0;
+        int distinctKodkodAmongDuplicates = 0;
+        int identicalKodkodAmongDuplicates = 0;
         List<int[]> duplicatePairs = new ArrayList<>();
 
         while (ans != null && ans.satisfiable()) {
-            String alloyOut = ans.toString();   // Alloy's own representation
+            String alloyOut = ans.toString();
+            String kodkod = normalizeKodkod(String.valueOf(ans.debugExtractKInstance()));
 
-            if (firstSeenAt.containsKey(alloyOut)) {
+            Record prior = firstSeenAt.get(alloyOut);
+            if (prior != null) {
                 duplicateCount++;
-                int firstIdx = firstSeenAt.get(alloyOut);
-                duplicatePairs.add(new int[]{firstIdx, total});
+                duplicatePairs.add(new int[]{prior.index, total});
+                boolean kodkodIdentical = kodkod.equals(prior.kodkod);
+                if (kodkodIdentical) identicalKodkodAmongDuplicates++;
+                else distinctKodkodAmongDuplicates++;
+
                 System.out.println("==============================================================");
-                System.out.println("DUPLICATE INSTANCE (identical Alloy output)");
-                System.out.println("  solution #" + total
-                        + " is byte-for-byte identical (per A4Solution.toString())");
-                System.out.println("  to earlier solution #" + firstIdx + ".");
+                System.out.println("DUPLICATE Alloy output: solution #" + total
+                        + " == earlier solution #" + prior.index
+                        + "  (identical per A4Solution.toString())");
+                System.out.println("--------------------------------------------------------------");
+                System.out.println("  Underlying Kodkod instance of THIS solution (#" + total + "):");
+                System.out.println("    Node.succ      = " + extract(kodkod, "succ"));
+                System.out.println("    Node.node_data = " + extract(kodkod, "node_data"));
+                System.out.println("  Underlying Kodkod instance of EARLIER solution (#"
+                        + prior.index + "):");
+                System.out.println("    Node.succ      = " + extract(prior.kodkod, "succ"));
+                System.out.println("    Node.node_data = " + extract(prior.kodkod, "node_data"));
+                System.out.println("  Kodkod instances raw-identical? " + kodkodIdentical
+                        + (kodkodIdentical ? "" : "   <-- DISTINCT: Alloy collapsed them"));
                 System.out.println("==============================================================");
             } else {
-                firstSeenAt.put(alloyOut, total);
+                firstSeenAt.put(alloyOut, new Record(total, kodkod));
             }
 
             total++;
@@ -92,28 +114,55 @@ public class SiloedMRE {
         }
 
         System.out.println("\n========================= SUMMARY =========================");
-        System.out.println("Total instances returned by the API : " + total);
-        System.out.println("Distinct Alloy outputs               : " + firstSeenAt.size());
-        System.out.println("Duplicate instances (identical out)  : " + duplicateCount);
-        if (!duplicatePairs.isEmpty()) {
-            System.out.print("Duplicate solution-index pairs       : ");
-            List<String> ps = new ArrayList<>();
-            for (int[] p : duplicatePairs) ps.add("(" + p[0] + "==" + p[1] + ")");
-            System.out.println(ps);
-        }
+        System.out.println("Total instances returned by the API        : " + total);
+        System.out.println("Distinct Alloy outputs                      : " + firstSeenAt.size());
+        System.out.println("Duplicate Alloy outputs                     : " + duplicateCount);
+        System.out.println("  of which backed by DISTINCT Kodkod inst.  : "
+                + distinctKodkodAmongDuplicates);
+        System.out.println("  of which backed by IDENTICAL Kodkod inst. : "
+                + identicalKodkodAmongDuplicates);
 
-        if (duplicateCount > 0) {
-            System.out.println("\nBUG CONFIRMED: the Alloy API returned " + duplicateCount
-                    + " instance(s) that are identical to instances it already returned.");
-            System.out.println("The GUI hides these via SimpleReporter's `latestKodkods` dedup;");
-            System.out.println("API consumers receive them. Kodkod is NOT at fault: it emits");
-            System.out.println("distinct boolean assignments (isomorphic-but-distinct instances)");
-            System.out.println("because static symmetry breaking is incomplete by design; Alloy");
-            System.out.println("then renders these to identical output without deduplicating on");
-            System.out.println("the API path. Fix belongs in the shared A4Solution enumeration,");
-            System.out.println("not in SimpleReporter.");
+        if (duplicateCount > 0 && identicalKodkodAmongDuplicates == 0) {
+            System.out.println("\nVERDICT: every duplicate Alloy output is backed by a DISTINCT");
+            System.out.println("Kodkod instance. Kodkod is correct (no repeated instances); the");
+            System.out.println("collapse to identical Alloy output happens in Alloy's translation/");
+            System.out.println("output layer. The API forwards these without deduplicating, while");
+            System.out.println("the GUI suppresses them via SimpleReporter's `latestKodkods` set.");
+        } else if (identicalKodkodAmongDuplicates > 0) {
+            System.out.println("\nNOTE: some duplicates are backed by IDENTICAL Kodkod instances;");
+            System.out.println("those would indicate a Kodkod-side repeat. Inspect separately.");
         } else {
             System.out.println("\nNo duplicates observed in this run/config.");
         }
+    }
+
+    /**
+     * The raw Kodkod instance string carries a lot of boilerplate (Int/, seq/,
+     * String, skolems). Trim to keep the report readable; the comparison itself
+     * uses the full normalized string so nothing is lost in the equality check.
+     */
+    static String normalizeKodkod(String raw) {
+        // Collapse whitespace so formatting differences never masquerade as
+        // instance differences.
+        return raw.replaceAll("\\s+", " ").trim();
+    }
+
+    /**
+     * Pull a named user relation (e.g. "succ", "node_data") out of the raw
+     * Kodkod dump for display. Matches "...succ=[[...]]" up to the closing
+     * "]]" or "succ=[]" for the empty case. Display-only; not used for equality.
+     */
+    static String extract(String kodkod, String field) {
+        // try non-empty: <field>=[[ ... ]]
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\\b" + java.util.regex.Pattern.quote(field) + "=\\[(\\[.*?\\])\\]")
+                .matcher(kodkod);
+        if (m.find()) return "[" + m.group(1) + "]";
+        // try empty: <field>=[]
+        java.util.regex.Matcher m2 = java.util.regex.Pattern
+                .compile("\\b" + java.util.regex.Pattern.quote(field) + "=\\[\\]")
+                .matcher(kodkod);
+        if (m2.find()) return "[]";
+        return "<not found>";
     }
 }
