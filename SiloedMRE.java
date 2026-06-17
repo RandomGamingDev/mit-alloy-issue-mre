@@ -17,10 +17,6 @@ import java.util.*;
  * layer, not by Kodkod: Kodkod hands Alloy different instances, and Alloy
  * collapses them to the same output without deduplicating on the API path.
  * The GUI hides this via SimpleReporter's `latestKodkods` dedup.
- *
- * Build (alloy.jar only):
- *   javac -cp alloy.jar AlloyApiMRE.java -d out
- *   java  -cp alloy.jar:out AlloyApiMRE
  */
 public class SiloedMRE {
 
